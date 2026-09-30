@@ -5,6 +5,7 @@ import binascii
 import hashlib
 import hmac
 import json
+import logging
 import math
 import re
 import secrets
@@ -23,6 +24,7 @@ from .main_types import EventType, Location, Report
 from .repository import MemoryReportRepository, ReportRepository, SupabaseReportRepository
 from .settings import get_settings
 
+logger = logging.getLogger("meghvaani")
 VerificationStatus = Literal["verified", "review", "suspicious", "pending"]
 Source = Literal["citizen", "reddit", "weather_api", "news", "simulated"]
 Severity = Literal["green", "yellow", "orange", "red"]
@@ -199,12 +201,21 @@ def require_citizen(credentials: HTTPAuthorizationCredentials | None = Depends(b
 
 @app.get("/api/health")
 def health() -> dict[str, str | int | bool]:
-    return {"status": "ok", "service": "meghvaani-backend", "reports": len(repository.list()), "persistence": settings.supabase_enabled}
+    try:
+        report_count = len(repository.list())
+    except Exception:
+        logger.exception("Unable to read reports from configured persistence provider")
+        return {"status": "degraded", "service": "meghvaani-backend", "reports": 0, "persistence": settings.supabase_enabled}
+    return {"status": "ok", "service": "meghvaani-backend", "reports": report_count, "persistence": settings.supabase_enabled}
 
 @app.get("/api/reports", response_model=list[Report])
 def list_reports(city: str | None = None, event_type: EventType | None = None, status: VerificationStatus | None = None,
                  limit: int = Query(100, ge=1, le=500)) -> list[Report]:
-    result = repository.list()
+    try:
+        result = repository.list()
+    except Exception:
+        logger.exception("Unable to list reports from configured persistence provider")
+        raise HTTPException(503, "Supabase is configured but the reports table is unavailable. Run backend/schema.sql in Supabase SQL Editor.")
     if city: result = [x for x in result if x.city.lower() == city.lower()]
     if event_type: result = [x for x in result if x.event_type == event_type]
     if status: result = [x for x in result if x.verification_status == status]
@@ -212,16 +223,29 @@ def list_reports(city: str | None = None, event_type: EventType | None = None, s
 
 @app.post("/api/reports", response_model=Report, status_code=201)
 def create_report(payload: ReportCreate, _citizen: str = Depends(require_citizen)) -> Report:
-    return add_report(payload)
+    try:
+        return add_report(payload)
+    except Exception:
+        logger.exception("Unable to persist citizen report")
+        raise HTTPException(503, "Report storage is unavailable. Run backend/schema.sql in Supabase SQL Editor and restart the backend.")
 
 @app.get("/api/stats")
 def stats() -> dict:
-    items = repository.list()
+    try:
+        items = repository.list()
+    except Exception:
+        logger.exception("Unable to calculate stats from configured persistence provider")
+        raise HTTPException(503, "Supabase reports table is unavailable. Run backend/schema.sql in Supabase SQL Editor.")
     return {"total_reports": len(items), "by_status": {s: sum(x.verification_status == s for x in items) for s in ("verified", "review", "suspicious", "pending")},
             "by_event_type": {e: sum(x.event_type == e for x in items) for e in KEYWORDS}, "active_alerts": len(build_alerts())}
 
 @app.get("/api/alerts", response_model=list[Alert])
-def alerts() -> list[Alert]: return build_alerts()
+def alerts() -> list[Alert]:
+    try:
+        return build_alerts()
+    except Exception:
+        logger.exception("Unable to build alerts from configured persistence provider")
+        raise HTTPException(503, "Supabase reports table is unavailable. Run backend/schema.sql in Supabase SQL Editor.")
 
 @app.get("/api/safe-zones", response_model=list[SafeZone])
 def get_safe_zones(city: str | None = None) -> list[SafeZone]:

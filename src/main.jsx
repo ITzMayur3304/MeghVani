@@ -5,7 +5,7 @@ import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import './styles.css'
 
-const API = import.meta.env.VITE_API_URL || 'http://localhost:8000/api'
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8003/api'
 const demoReports = [
   { report_id: 'MV-24091', city: 'Pune', state: 'Maharashtra', event_type: 'flood', text: 'Water has entered the ground floor near Sinhagad Road after intense rainfall.', timestamp: '2026-09-30T06:35:00Z', verification_status: 'verified', confidence_score: 0.94, source: 'citizen' },
   { report_id: 'MV-24090', city: 'Nashik', state: 'Maharashtra', event_type: 'thunderstorm', text: 'Very strong winds and lightning observed across Gangapur Road.', timestamp: '2026-09-30T05:45:00Z', verification_status: 'verified', confidence_score: 0.89, source: 'weather_api' },
