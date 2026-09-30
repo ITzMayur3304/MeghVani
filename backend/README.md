@@ -37,6 +37,20 @@ Each item must contain `text` or `full_text`, and may contain `id`. Confirm the
 exact API contract, authentication header, and response shape with your
 TweetHarvest deployment before enabling it.
 
-Admin login is a placeholder at `POST /api/admin/login`. Set `ADMIN_USERNAME`,
-`JWT_SECRET`, and a PBKDF2 password hash in `.env`; no password is hardcoded.
-Generate a hash in a trusted local script rather than committing credentials.
+Authentication:
+
+* `POST /api/citizens/register` and `POST /api/citizens/login` accept
+  `{ "email": "...", "password": "..." }` and return a JWT. Passwords are
+  salted PBKDF2-SHA256 hashes and registrations are held in memory in demo mode.
+* `POST /api/reports` requires `Authorization: Bearer <citizen-token>`.
+  `GET /api/reports`, `/api/alerts`, and `/api/notifications` remain public.
+* `POST /api/admin/login` remains available for the configured admin. Set
+  `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`, and a random, environment-only
+  `JWT_SECRET`; no credentials or fallback secret are hardcoded.
+
+OpenWeather ingestion can be triggered with the existing
+`POST /api/ingestion/weather` or a polling-friendly
+`GET /api/ingestion/weather/poll?city=...&state=...&latitude=...&longitude=...`.
+Both use `OPENWEATHER_API_KEY`, `OPENWEATHER_BASE_URL`, and
+`OPENWEATHER_POLL_INTERVAL_SECONDS`. Without the API key, demo read endpoints
+continue to work and ingestion returns `503`.

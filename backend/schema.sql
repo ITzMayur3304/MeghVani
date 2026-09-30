@@ -24,3 +24,13 @@ create unique index if not exists reports_source_id_idx on public.reports (sourc
 alter table public.reports enable row level security;
 -- Add explicit authenticated read/insert/update policies if browser access is needed.
 -- Keep the service role key server-side; never expose it in frontend code.
+
+-- Citizen credentials are stored as PBKDF2 hashes only. The API currently keeps
+-- registrations in memory for zero-config demo mode; this table is for durable
+-- deployments that wire a user repository to Supabase.
+create table if not exists public.citizens (
+  email text primary key,
+  password_hash text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.citizens enable row level security;

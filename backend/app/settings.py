@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     tweetharvest_api_url: str | None = None
     tweetharvest_api_key: str | None = None
     tweetharvest_bearer_token: str | None = None
-    jwt_secret: str = "change-me-in-production"
+    jwt_secret: str | None = None
+    openweather_base_url: str = "https://api.openweathermap.org/data/2.5/weather"
+    openweather_poll_interval_seconds: int = Field(default=900, ge=60, le=86400)
     admin_username: str | None = None
     admin_password_hash: str | None = None
 

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import hmac
 import json
 import math
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import uuid4
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
@@ -96,11 +99,20 @@ class AdminLogin(BaseModel):
     username: str = Field(..., min_length=1)
     password: str = Field(..., min_length=1)
 
+class CitizenRegister(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+
+class CitizenLogin(CitizenRegister):
+    pass
+
 app = FastAPI(title="MeghVaani Weather Intelligence API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["*"])
 repository: ReportRepository = (SupabaseReportRepository(settings.supabase_url, settings.supabase_service_role_key)
                                  if settings.supabase_enabled else MemoryReportRepository())
+citizens: dict[str, str] = {}
+bearer = HTTPBearer(auto_error=False)
 safe_zones = [SafeZone(zone_id="sz-nashik-01", name="Nashik Municipal Relief Centre", city="Nashik", address="Panchavati", capacity=500, location=Location(coordinates=(73.7898, 20.0059))),
  SafeZone(zone_id="sz-pune-01", name="Pune Disaster Response Centre", city="Pune", address="Shivajinagar", capacity=750, location=Location(coordinates=(73.8567, 18.5204))),
  SafeZone(zone_id="sz-mumbai-01", name="BMC Emergency Shelter", city="Mumbai", address="Kurla West", capacity=600, location=Location(coordinates=(72.8777, 19.076)))]
@@ -151,6 +163,40 @@ def seed() -> None:
 if not settings.supabase_enabled:
     seed()
 
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    iterations = 310000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, iterations)
+    return f"pbkdf2_sha256${iterations}${base64.urlsafe_b64encode(salt).decode()}${base64.urlsafe_b64encode(digest).decode()}"
+
+def auth_secret() -> str:
+    if not settings.jwt_secret:
+        raise HTTPException(503, "Authentication is not configured")
+    return settings.jwt_secret
+
+def decode_jwt(token: str) -> dict:
+    try:
+        header, encoded_payload, encoded_signature = token.split(".", 2)
+        signing_input = f"{header}.{encoded_payload}".encode()
+        expected = hmac.new(auth_secret().encode(), signing_input, hashlib.sha256).digest()
+        signature = base64.urlsafe_b64decode(encoded_signature + "=" * (-len(encoded_signature) % 4))
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError
+        payload = json.loads(base64.urlsafe_b64decode(encoded_payload + "=" * (-len(encoded_payload) % 4)))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            raise ValueError
+        return payload
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(401, "Invalid or expired token")
+
+def require_citizen(credentials: HTTPAuthorizationCredentials | None = Depends(bearer)) -> str:
+    if credentials is None:
+        raise HTTPException(401, "Citizen authentication required")
+    payload = decode_jwt(credentials.credentials)
+    if payload.get("role") != "citizen":
+        raise HTTPException(403, "Citizen authentication required")
+    return str(payload["sub"])
+
 @app.get("/api/health")
 def health() -> dict[str, str | int | bool]:
     return {"status": "ok", "service": "meghvaani-backend", "reports": len(repository.list()), "persistence": settings.supabase_enabled}
@@ -165,7 +211,7 @@ def list_reports(city: str | None = None, event_type: EventType | None = None, s
     return sorted(result, key=lambda x: x.timestamp, reverse=True)[:limit]
 
 @app.post("/api/reports", response_model=Report, status_code=201)
-def create_report(payload: ReportCreate) -> Report:
+def create_report(payload: ReportCreate, _citizen: str = Depends(require_citizen)) -> Report:
     return add_report(payload)
 
 @app.get("/api/stats")
@@ -196,7 +242,7 @@ async def ingest_weather(payload: IngestionRequest) -> dict:
     if not settings.openweather_api_key: raise HTTPException(503, "OpenWeather is not configured")
     params = {"lat": payload.latitude, "lon": payload.longitude, "appid": settings.openweather_api_key, "units": "metric"}
     async with httpx.AsyncClient(timeout=10) as client:
-        response = await client.get("https://api.openweathermap.org/data/2.5/weather", params=params)
+        response = await client.get(settings.openweather_base_url, params=params)
     if response.is_error: raise HTTPException(502, "OpenWeather request failed")
     data = response.json()
     weather = data.get("weather", [{}])[0].get("description", "weather conditions")
@@ -205,6 +251,14 @@ async def ingest_weather(payload: IngestionRequest) -> dict:
         source_id=str(data.get("id", "")), city=payload.city, state=payload.state,
         location=Location(coordinates=(payload.longitude, payload.latitude))))
     return {"provider": "openweather", "report": report, "raw": {"weather": data.get("weather"), "main": data.get("main")}}
+
+@app.get("/api/ingestion/weather/poll")
+async def poll_weather(city: str = Query(..., min_length=2, max_length=100),
+                        state: str = Query(..., min_length=2, max_length=100),
+                        latitude: float = Query(..., ge=-90, le=90),
+                        longitude: float = Query(..., ge=-180, le=180)) -> dict:
+    """Poll OpenWeather using configured credentials and persist a cross-check report."""
+    return await ingest_weather(IngestionRequest(city=city, state=state, latitude=latitude, longitude=longitude))
 
 @app.post("/api/ingestion/reddit")
 async def ingest_reddit(payload: IngestionRequest) -> dict:
@@ -247,18 +301,42 @@ def verify_password(password: str, encoded: str) -> bool:
         if algorithm != "pbkdf2_sha256": return False
         actual = hashlib.pbkdf2_hmac("sha256", password.encode(), base64.urlsafe_b64decode(salt), int(iterations))
         return hmac.compare_digest(base64.urlsafe_b64encode(actual).decode(), expected)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, binascii.Error):
         return False
 
-def jwt_token(subject: str) -> str:
+def jwt_token(subject: str, role: str) -> str:
+    secret = auth_secret()
     header = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').rstrip(b"=").decode()
-    payload = base64.urlsafe_b64encode(json.dumps({"sub": subject, "exp": int(time.time()) + 3600}, separators=(",", ":")).encode()).rstrip(b"=").decode()
-    signature = hmac.new(settings.jwt_secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
+    payload = base64.urlsafe_b64encode(json.dumps({"sub": subject, "role": role, "exp": int(time.time()) + 3600}, separators=(",", ":")).encode()).rstrip(b"=").decode()
+    signature = hmac.new(secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
     return f"{header}.{payload}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+
+@app.post("/api/citizens/register")
+def citizen_register(credentials: CitizenRegister) -> dict[str, str]:
+    email = credentials.email.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(422, "A valid email is required")
+    auth_secret()
+    if email in citizens:
+        raise HTTPException(409, "Citizen already registered")
+    citizens[email] = hash_password(credentials.password)
+    return {"access_token": jwt_token(email, "citizen"), "token_type": "bearer"}
+
+@app.post("/api/citizens/login")
+def citizen_login(credentials: CitizenLogin) -> dict[str, str]:
+    email = credentials.email.strip().lower()
+    if email not in citizens or not verify_password(credentials.password, citizens[email]):
+        raise HTTPException(401, "Invalid credentials")
+    return {"access_token": jwt_token(email, "citizen"), "token_type": "bearer"}
 
 @app.post("/api/admin/login")
 def admin_login(credentials: AdminLogin) -> dict[str, str]:
     if not settings.admin_username or not settings.admin_password_hash: raise HTTPException(503, "Admin login is not configured")
     if not hmac.compare_digest(credentials.username, settings.admin_username) or not verify_password(credentials.password, settings.admin_password_hash):
         raise HTTPException(401, "Invalid credentials")
-    return {"access_token": jwt_token(credentials.username), "token_type": "bearer"}
+    return {"access_token": jwt_token(credentials.username, "admin"), "token_type": "bearer"}
+
+@app.get("/api/notifications", response_model=list[Alert])
+def notifications() -> list[Alert]:
+    """Public notification feed derived from currently active weather alerts."""
+    return build_alerts()
