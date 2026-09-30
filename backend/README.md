@@ -20,9 +20,19 @@ available at http://localhost:8000/docs. `.env` is ignored by git.
 
 ## Persistence and providers
 
-Run `schema.sql` in Supabase, then set `SUPABASE_URL` and
+Run `schema.sql` in the Supabase SQL Editor, then set `SUPABASE_URL` and
 `SUPABASE_SERVICE_ROLE_KEY`. The service-role key is server-only and bypasses RLS;
 keep it out of frontend bundles. Without both values, reports stay in memory.
+`SUPABASE_URL` must be the project URL (`https://<project-ref>.supabase.co`),
+not the REST endpoint with `/rest/v1/`. The API loads `backend/.env`
+regardless of the directory from which uvicorn is started.
+
+After the schema runs successfully, restart FastAPI and verify
+`/api/health` reports `"persistence": true`. New citizen reports will then be
+inserted into the online `public.reports` table instead of the demo memory store.
+The schema also creates a private `report-media` Storage bucket for the
+server-side image upload work; the service-role key must never be used in the
+React client.
 
 `POST /api/ingestion/weather` requires `OPENWEATHER_API_KEY` and sends the
 coordinates in the request to OpenWeather, storing a cross-check report.

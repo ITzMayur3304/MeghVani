@@ -34,3 +34,16 @@ create table if not exists public.citizens (
   created_at timestamptz not null default now()
 );
 alter table public.citizens enable row level security;
+
+-- Public report images are stored in Supabase Storage. Uploads should be
+-- performed by the FastAPI service with the service-role key; the browser
+-- should only receive a signed/public URL.
+insert into storage.buckets (id, name, public)
+values ('report-media', 'report-media', false)
+on conflict (id) do nothing;
+
+create policy "service role manages report media"
+on storage.objects for all
+to service_role
+using (bucket_id = 'report-media')
+with check (bucket_id = 'report-media');

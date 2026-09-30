@@ -109,7 +109,7 @@ class CitizenLogin(CitizenRegister):
 app = FastAPI(title="MeghVaani Weather Intelligence API", version="0.2.0")
 app.add_middleware(CORSMiddleware, allow_origins=settings.origins, allow_credentials=True,
                    allow_methods=["GET", "POST", "OPTIONS"], allow_headers=["*"])
-repository: ReportRepository = (SupabaseReportRepository(settings.supabase_url, settings.supabase_service_role_key)
+repository: ReportRepository = (SupabaseReportRepository(settings.supabase_project_url, settings.supabase_service_role_key)
                                  if settings.supabase_enabled else MemoryReportRepository())
 citizens: dict[str, str] = {}
 bearer = HTTPBearer(auto_error=False)

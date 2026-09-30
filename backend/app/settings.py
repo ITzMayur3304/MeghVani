@@ -1,4 +1,5 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -22,7 +23,11 @@ class Settings(BaseSettings):
     admin_username: str | None = None
     admin_password_hash: str | None = None
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(
+        env_file=Path(__file__).resolve().parents[1] / ".env",
+        extra="ignore",
+        case_sensitive=False,
+    )
 
     @property
     def origins(self) -> list[str]:
@@ -31,6 +36,12 @@ class Settings(BaseSettings):
     @property
     def supabase_enabled(self) -> bool:
         return bool(self.supabase_url and self.supabase_service_role_key)
+
+    @property
+    def supabase_project_url(self) -> str | None:
+        if not self.supabase_url:
+            return None
+        return self.supabase_url.removesuffix("/rest/v1").rstrip("/")
 
 
 @lru_cache
